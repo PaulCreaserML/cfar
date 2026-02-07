@@ -3,19 +3,38 @@ import csv
 import datetime
 import time
 import numpy as np
-import pyqtgraph as pg
-from scipy.stats import gamma
 from collections import deque
+
+from scipy.stats import gamma
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QHBoxLayout, QFormLayout, QGroupBox, QLabel,
+                             QHBoxLayout, QFormLayout, QGroupBox, QLabel, QLineEdit,
                              QComboBox, QDoubleSpinBox, QSpinBox, QPushButton, QCheckBox, QMessageBox)
 from PyQt5.QtCore import Qt, QTimer
+import pyqtgraph as pg
 
 # --- 1. RADAR PHYSICS ---
 class RadarEnvironment:
     def __init__(self, num_bins=1200):
         self.num_bins = num_bins
         self.range_axis = np.linspace(0, 50, num_bins)
+
+    def generate_clutter_k_dist(self, shape_param=1.0, scale_param=1.0):
+            # 1. Texture (Gamma distribution: modeling the 'surges' in the sea)
+            # Often denoted by the 'nu' parameter in K-distribution literature
+            texture = np.random.gamma(shape=shape_param, scale=scale_param, size=self.num_bins)
+
+            # 2. Speckle (Complex Gaussian / Rayleigh component)
+            u_real = np.random.normal(0, np.sqrt(0.5), self.num_bins)
+            u_imag = np.random.normal(0, np.sqrt(0.5), self.num_bins)
+            speckle = np.abs(u_real + 1j * u_imag)**2
+
+            # 3. Compound result (Modulated Speckle)
+            clutter = texture * speckle
+
+            # Apply Range Loss
+            range_loss = 1.0 / (np.maximum(self.range_axis, 1.0)**2.5)
+            range_loss = range_loss / range_loss[0]
+            return clutter * range_loss
 
     def generate_clutter(self, shape_param=1.0, scale_param=5.0):
         # Texture & Speckle
@@ -184,6 +203,7 @@ class RadarSimulatorPG(QMainWindow):
         super().__init__()
         self.setWindowTitle("Radar Simulator with Data Logger")
         self.resize(1300, 900)
+        print("Hello")
 
         self.env = RadarEnvironment(num_bins=1200)
         self.target_indices = [300, 600, 950]
@@ -202,6 +222,8 @@ class RadarSimulatorPG(QMainWindow):
         self.setCentralWidget(main_widget)
         layout = QHBoxLayout(main_widget)
 
+        print("Hello 1")
+
         # --- LEFT PANEL (Controls) ---
         left_layout = QVBoxLayout()
         layout.addLayout(left_layout, stretch=0)
@@ -211,11 +233,21 @@ class RadarSimulatorPG(QMainWindow):
         panel_params.setFixedWidth(280)
         form = QFormLayout()
 
+        print("Hello 3")
+
         self.combo_algo = QComboBox()
         self.combo_algo.addItems(["CA-CFAR", "GO-CFAR", "SO-CFAR", "OS-CFAR"])
 
+        self.spin_guard = QSpinBox()
+        self.spin_guard.setRange(0, 50)  # Allow 0 to 50 guard cells
+        self.spin_guard.setValue(2)      # Default to 2
+        self.spin_guard.setToolTip("Number of guard cells on one side")
+
         self.spin_pfa = QDoubleSpinBox()
         self.spin_pfa.setRange(1.0, 9.0); self.spin_pfa.setValue(4.0)
+
+        self.combo_clutter_model = QComboBox()
+        self.combo_clutter_model.addItems(["Standard (Gamma)", "Compound K-Dist"])
 
         self.spin_sea = QDoubleSpinBox()
         self.spin_sea.setRange(0.1, 10.0); self.spin_sea.setValue(0.5); self.spin_sea.setSingleStep(0.1)
@@ -233,16 +265,31 @@ class RadarSimulatorPG(QMainWindow):
         self.spin_snr.setSuffix(" dB")
 
         self.combo_swerling = QComboBox()
-        self.combo_swerling.addItems(["Swerling 1 (Slow)", "Swerling 3 (Big Ship)", "Swerling 0 (Steady)"])
+        self.combo_swerling.addItems([ "Swerling 4 (Fast Dom)", "Swerling 3 (Big Ship)", "Swerling 2 (Fast)", "Swerling 1 (Slow)", "Swerling 0 (Steady)"])
+
+        self.spin_noise_floor = QDoubleSpinBox()
+        self.spin_noise_floor.setRange(0.001, 2.0)
+        self.spin_noise_floor.setValue(0.1)
+        self.spin_noise_floor.setSingleStep(0.01)
+        self.spin_noise_floor.setToolTip("Receiver Thermal Noise Power")
+
+        self.edit_target_ranges = QLineEdit("12.5, 25.0, 39.5") # Default ranges in km
+        self.edit_target_ranges.setToolTip("Enter target ranges in km, separated by commas")
+
 
         self.chk_auto = QCheckBox("Run Realtime"); self.chk_auto.setChecked(True)
         self.chk_auto.stateChanged.connect(self.toggle_timer)
 
         form.addRow("Algorithm:", self.combo_algo)
+        form.addRow("Guard Cells:", self.spin_guard)
         form.addRow("PFA (1e-X):", self.spin_pfa)
+        form.addRow("Clutter Model:", self.combo_clutter_model)
         form.addRow("Sea K-Shape:", self.spin_sea)
         form.addRow("Sea Scale:", self.spin_clutter_scale)
+        form.addRow("Receiver Noise:", self.spin_noise_floor)
+
         form.addRow("Blind Zone:", self.spin_dead_zone)
+        form.addRow("Target Ranges (km):", self.edit_target_ranges)
         form.addRow("Target SNR:", self.spin_snr)
         form.addRow("Target Type:", self.combo_swerling)
         form.addRow(self.chk_auto)
@@ -257,6 +304,8 @@ class RadarSimulatorPG(QMainWindow):
         self.spin_window = QSpinBox()
         self.spin_window.setRange(10, 500); self.spin_window.setValue(50)
         self.spin_window.valueChanged.connect(self.update_window_size)
+
+        print("Hello 8")
 
         self.lbl_pd = QLabel("0.0 %")
         self.lbl_pfa = QLabel("0.0")
@@ -278,6 +327,8 @@ class RadarSimulatorPG(QMainWindow):
         panel_metrics.setLayout(metrics_form)
         left_layout.addWidget(panel_metrics)
 
+        print("Hello 8")
+
         # 3. Data Logger Group (NEW)
         panel_log = QGroupBox("Data Logger")
         panel_log.setFixedWidth(280)
@@ -289,16 +340,26 @@ class RadarSimulatorPG(QMainWindow):
         self.spin_log_duration.setValue(10)
         self.spin_log_duration.setSuffix(" sec")
 
+        print("Hello 8")
+
         log_form.addRow("Duration:", self.spin_log_duration)
 
         self.btn_log = QPushButton("Start Logging to CSV")
         self.btn_log.clicked.connect(self.start_logging)
         self.btn_log.setStyleSheet("background-color: #E0E0E0; font-weight: bold; padding: 5px;")
 
+        # Inside the 'Data Logger Group' layout
+        self.btn_batch = QPushButton("Run SNR Sweep (Pd vs SNR)")
+        self.btn_batch.clicked.connect(self.run_batch_test)
+        self.btn_batch.setStyleSheet("background-color: #D1E8FF; font-weight: bold; padding: 5px;")
+
+        print("Hello 9")
+
         log_layout.addLayout(log_form)
         log_layout.addWidget(self.btn_log)
         panel_log.setLayout(log_layout)
         left_layout.addWidget(panel_log)
+        log_layout.addWidget(self.btn_batch)
 
         left_layout.addStretch()
 
@@ -307,29 +368,41 @@ class RadarSimulatorPG(QMainWindow):
         pg.setConfigOption('background', 'k')
         pg.setConfigOption('foreground', 'd')
 
+        print("Hello 10")
+
         self.plot_scope = pg.PlotWidget(title="A-Scope (Log Power)")
+        print("Hello 10.1")
         self.plot_scope.showGrid(x=True, y=True, alpha=0.3)
+        print("Hello 10.2")
         self.plot_scope.setLogMode(x=False, y=True)
         self.plot_scope.setYRange(-1, 3)
         self.plot_scope.setLabel('bottom', 'Range', units='km')
         self.plot_scope.addLegend(offset=(10, 10))
 
+        print("Hello 10.3")
+
         self.curve_signal = self.plot_scope.plot(pen=pg.mkPen('#00FF00', width=1), name='Raw Signal')
         self.curve_thresh = self.plot_scope.plot(pen=pg.mkPen('#FF0000', width=2, style=Qt.DashLine), name='Threshold')
         self.scatter_targets = self.plot_scope.plot(pen=None, symbol='o', symbolBrush='b', symbolSize=10, name='Target Truth')
 
+        print("Hello 10.4")
         self.plot_binary = pg.PlotWidget(title="Binary Detection Stream")
         self.plot_binary.setYRange(-0.1, 1.1)
         self.plot_binary.setLabel('bottom', 'Range', units='km')
         self.curve_detect = self.plot_binary.plot(pen=pg.mkPen('#FFFF00', width=2), fillLevel=0, brush=(255,255,0,50))
 
+        print("Hello 10.5")
         plot_layout.addWidget(self.plot_scope)
         plot_layout.addWidget(self.plot_binary)
         layout.addLayout(plot_layout, stretch=1)
 
+        print("Hello 11")
+
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_loop)
         self.timer.start(50)
+
+        print("Hello End")
 
     def toggle_timer(self, state):
         if state == Qt.Checked: self.timer.start(50)
@@ -359,7 +432,7 @@ class RadarSimulatorPG(QMainWindow):
             with open(filename, 'w', newline='') as f:
                 writer = csv.writer(f)
                 # Header
-                writer.writerow(["Timestamp", "Algo", "PFA_Set", "SNR_dB", "Sea_Shape", "Sea_Scale", "Blind_Zone_km", "Pd_Percent", "Pfa_Measured", "TP", "FP", "FN"])
+                writer.writerow(["Timestamp", "Algo", "Noise_Floor", "PFA_Set", "SNR_dB", "Sea_Shape", "Sea_Scale", "Blind_Zone_km", "Pd_Percent", "Pfa_Measured", "TP", "FP", "FN"])
                 writer.writerows(self.log_buffer)
 
             print(f"Log saved to {filename}")
@@ -375,20 +448,28 @@ class RadarSimulatorPG(QMainWindow):
         self.btn_log.setStyleSheet("background-color: #E0E0E0; font-weight: bold; padding: 5px;")
         self.btn_log.setEnabled(True)
 
+
     def update_loop(self):
         # 1. Inputs
         sea_shape = self.spin_sea.value()
         sea_scale = self.spin_clutter_scale.value()
+        clutter_model = self.combo_clutter_model.currentText()
         pfa_exp = self.spin_pfa.value()
         pfa = 10 ** (-pfa_exp)
         algo = self.combo_algo.currentText()
         swerling = self.combo_swerling.currentText()
+        noise_power = self.spin_noise_floor.value()
         target_snr = self.spin_snr.value()
         dead_zone_km = self.spin_dead_zone.value()
+        num_guard_cells = self.spin_guard.value()
 
         # 2. Physics
-        signal = self.env.generate_clutter(shape_param=sea_shape, scale_param=sea_scale)
-        signal += np.random.exponential(0.1, size=len(signal))
+        if clutter_model == "Compound K-Dist":
+            signal = self.env.generate_clutter_k_dist(shape_param=sea_shape, scale_param=sea_scale)
+        else:
+            signal = self.env.generate_clutter(shape_param=sea_shape, scale_param=sea_scale)
+
+        signal += np.random.exponential(noise_power, size=len(signal))
 
         x_axis = self.env.range_axis
         target_x, target_y = [], []
@@ -399,8 +480,21 @@ class RadarSimulatorPG(QMainWindow):
             target_x.append(x_axis[idx])
             target_y.append(signal[idx])
 
+        try:
+            raw_ranges = self.edit_target_ranges.text().split(',')
+            # Convert km to bin index: index = (range / max_range) * num_bins
+            dynamic_indices = []
+            for r in raw_ranges:
+                km = float(r.strip())
+                idx = int((km / 50.0) * self.env.num_bins)
+                if 0 <= idx < self.env.num_bins:
+                    dynamic_indices.append(idx)
+            self.target_indices = dynamic_indices # Update the active indices
+        except ValueError:
+            pass # Handle malformed input gracefully
+
         # 3. CFAR Detection
-        threshold = run_cfar(signal, algo, num_train=15, num_guard=2, pfa=pfa)
+        threshold = run_cfar(signal, algo, num_train=15, num_guard=num_guard_cells, pfa=pfa)
 
         # Apply Blind Zone
         bins_per_km = self.env.num_bins / 50.0
@@ -467,7 +561,7 @@ class RadarSimulatorPG(QMainWindow):
             # Append current frame stats to buffer
             current_time = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
             row = [
-                current_time, algo, pfa_exp, target_snr, sea_shape, sea_scale, dead_zone_km,
+                current_time, algo, noise_power, pfa_exp, target_snr, sea_shape, sea_scale, dead_zone_km,
                 pd, pfa_measured, avg_tp, avg_fp, avg_fn
             ]
             self.log_buffer.append(row)
@@ -483,8 +577,96 @@ class RadarSimulatorPG(QMainWindow):
         self.scatter_targets.setData(target_x, target_y)
         self.curve_detect.setData(x_axis, detections)
 
-if __name__ == "__main__":
+    def run_batch_test(self):
+        """Sweeps SNR from 0 to 30 dB and calculates Pd for each algorithm."""
+        # 1. Setup Sweep Parameters
+        snr_range = np.arange(0, 31, 2) # 0, 2, 4 ... 30 dB
+        iterations_per_snr = 100 # How many frames to average
+        algos_to_test = ["CA-CFAR", "GO-CFAR", "SO-CFAR", "OS-CFAR"]
+
+        # Data storage: { 'CA-CFAR': [pd1, pd2, ...], ... }
+        results = {algo: [] for algo in algos_to_test}
+
+        # 2. Get current environment settings from GUI
+        sea_shape = self.spin_sea.value()
+        sea_scale = self.spin_clutter_scale.value()
+        clutter_model = self.combo_clutter_model.currentText()
+        noise_power = self.spin_noise_floor.value()
+        pfa = 10 ** (-self.spin_pfa.value())
+        num_guard = self.spin_guard.value()
+
+        # 3. Perform the Sweep
+        # We disable the timer so the GUI doesn't conflict
+        self.timer.stop()
+        self.btn_batch.setText("Running Sweep...")
+        QApplication.processEvents() # Refresh UI
+
+        for algo in algos_to_test:
+            for snr in snr_range:
+                tp_total = 0
+                targets_total = 0
+
+                for _ in range(iterations_per_snr):
+                    # Generate Physics
+                    if clutter_model == "Compound K-Dist":
+                        sig = self.env.generate_clutter_k_dist(sea_shape, sea_scale)
+                    else:
+                        sig = self.env.generate_clutter(sea_shape, sea_scale)
+
+                    sig += np.random.exponential(noise_power, size=len(sig))
+
+                    # Add Targets at dynamic positions
+                    for idx in self.target_indices:
+                        rcs = self.env.generate_target_rcs(self.combo_swerling.currentText(), snr)
+                        sig[idx] += rcs
+
+                    # Run CFAR
+                    thresh = run_cfar(sig, algo, 15, num_guard, pfa)
+                    dets = (sig > thresh).astype(int)
+
+                    # Simple Scoring for Batch
+                    for t_idx in self.target_indices:
+                        targets_total += 1
+                        # Check +/- 2 bin window
+                        if np.any(dets[max(0, t_idx-2):min(len(dets), t_idx+3)] == 1):
+                            tp_total += 1
+
+                pd = (tp_total / targets_total) * 100
+                results[algo].append(pd)
+
+        # 4. Plotting the results
+        self.show_roc_plot(snr_range, results)
+
+        # Cleanup
+        self.btn_batch.setText("Run SNR Sweep (Pd vs SNR)")
+        self.timer.start(50)
+
+    def show_roc_plot(self, snr_range, results):
+            self.roc_win = pg.GraphicsLayoutWidget(title="Batch Test Results")
+            self.roc_win.resize(800, 600)
+            plot = self.roc_win.addPlot(title="Performance: Pd vs. SNR")
+            plot.setLabel('bottom', "Target SNR", units='dB')
+            plot.setLabel('left', "Probability of Detection (Pd)", units='%')
+            plot.addLegend()
+            plot.showGrid(x=True, y=True)
+
+            colors = ['#FF0000', '#00FF00', '#0000FF', '#FFFF00']
+            for i, (algo, pds) in enumerate(results.items()):
+                plot.plot(snr_range, pds, pen=pg.mkPen(colors[i], width=3), name=algo, symbol='o')
+
+            self.roc_win.show()
+
+def main():
     app = QApplication(sys.argv)
+    print(app)
+
+    # 3. Create and show the Window
     window = RadarSimulatorPG()
+    print(window)
     window.show()
-    sys.exit(app.exec_())
+
+    # 4. Start the Event Loop
+    sys.exit(app.exec())
+
+if __name__ == "__main__":
+    main()
